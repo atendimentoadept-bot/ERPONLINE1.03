@@ -11,9 +11,9 @@ import io
 conn = st.connection("gsheets", type=GSheetsConnection)
 # 1. Primeiro, defina os links das suas planilhas
 # Substitua os links abaixo pelos links REAIS das suas planilhas
-url_base_pessoas = "https://docs.google.com/spreadsheets/d/SEU_ID_AQUI/edit"
-url_base_produtos = "https://docs.google.com/spreadsheets/d/OUTRO_ID_AQUI/edit"
-url_base_pedidos = "https://docs.google.com/spreadsheets/d/MAIS_UM_ID_AQUI/edit"
+url_base_pessoas = "https://docs.google.com/spreadsheets/d/1AqdC3_qFiWvVkEunGBw9EuYRDiliMd9dORmZQNHZbVg/edit?gid=0#gid=0"
+url_base_produtos = "https://docs.google.com/spreadsheets/d/1QwQYMfIflhy18xo2VGRYKnR9-uJJr69W_NfOln8KQJo/edit?gid=0#gid=0"
+url_base_pedidos = "https://docs.google.com/spreadsheets/d/1U7FQYusJFAOoqRdp7bY3pODyCKGYnvDl9mLWNKAELoI/edit?usp=sharing"
 
 # 2. Depois, crie a conexão
 conn = st.connection("gsheets", type=GSheetsConnection)
@@ -997,6 +997,7 @@ elif pagina == "Formalizacao":
                 except Exception as e:
 
                     st.error(f"Erro inesperado: {e}")
+
 
 
 
