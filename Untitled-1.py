@@ -649,97 +649,142 @@ elif pagina == "Criar Pedido":
                         st.rerun()
                     except Exception as e:
                         st.error(f"Erro ao salvar: {e}")
-
 elif pagina == "Consultar Pedido":
     st.title("Gestão e Consulta de Pedidos")
-    url_base_pedidos = "https://docs.google.com/spreadsheets/d/1U7FQYusJFAOoqRdp7bY3pODyCKGYnvDl9mLWNKAELoI/edit?gid=0#gid=0"
 
-    # 1. Preparação de Dados (Usa os dataframes carregados na Parte 1)
-    if dados_pedidos.empty:
-        st.warning("Nenhuma base de pedidos encontrada.")
-        st.stop()
-
+    # 1. Padronização Inicial dos Dados
     df_pedidos = dados_pedidos.copy()
-    # Padronização para cruzamento de dados
-    df_pedidos['sku_item'] = df_pedidos['sku_item'].astype(str)
-    df_pedidos['doc_cliente'] = df_pedidos['doc_cliente'].astype(str)
-    df_pedidos['data_pedido_dt'] = pd.to_datetime(df_pedidos['data_pedido'], format="%d/%m/%Y %H:%M", errors='coerce')
+    df_produtos = dados_produtos.copy()
+    df_pessoas = dados_pessoas.copy()
 
-    # --- FUNÇÃO POP-UP DE EDIÇÃO ---
+    # Garantir tipos corretos para evitar erro de merge
+    df_pedidos['id_pedido'] = pd.to_numeric(df_pedidos['id_pedido'], errors='coerce').fillna(0).astype(int)
+    df_pedidos['sku_item'] = df_pedidos['sku_item'].astype(str)
+    df_produtos['id_sku'] = df_produtos['id_sku'].astype(str)
+
+    # Identificar nome da coluna de frete (evita KeyError)
+    col_frete = 'frete_total' if 'frete_total' in df_pedidos.columns else 'frete'
+
+    # --- FUNÇÃO DO POP-UP DE EDIÇÃO ---
     @st.dialog("Editar Pedido", width="large")
     def editar_pedido_pop(id_p):
-        st.write(f"### Editando Pedido Nº {id_p}")
+        st.write(f"### Ajustes no Pedido #{id_p}")
         
-        # Filtra os dados atuais do pedido
-        mask = df_pedidos["id_pedido"].astype(int) == int(id_p)
-        itens_atuais = df_pedidos[mask].to_dict('records')
+        # Filtra itens atuais do pedido
+        mask = df_pedidos["id_pedido"] == id_p
+        itens_atuais = df_pedidos[mask].copy()
         
-        # Se não inicializado, carrega dados originais para o estado de edição
+        # Inicializa o estado de edição se não existir
         if "edit_carrinho" not in st.session_state:
-            st.session_state.edit_carrinho = []
-            for it in itens_atuais:
-                st.session_state.edit_carrinho.append({
-                    "sku": it['sku_item'],
-                    "qtd": int(it['qtd']),
-                    "valor_unit": float(it['valor_final']),
-                    "subtotal": int(it['qtd']) * float(it['valor_final'])
-                })
-            st.session_state.edit_cliente = itens_atuais[0]['doc_cliente']
-            st.session_state.edit_tipo = itens_atuais[0]['tipo']
-            st.session_state.edit_obs = itens_atuais[0]['observacao']
-            st.session_state.edit_frete = float(itens_atuais[0]['frete'])
+            st.session_state.edit_carrinho = itens_atuais.to_dict('records')
+            st.session_state.edit_tipo = str(itens_atuais.iloc[0]['tipo'])
+            st.session_state.edit_obs = str(itens_atuais.iloc[0]['observacao'])
+            st.session_state.edit_frete = float(itens_atuais.iloc[0][col_frete])
 
-        # --- Campos de Edição ---
-        col1, col2 = st.columns(2)
-        novo_tipo = col1.selectbox("Alterar Tipo", ["ORÇAMENTO", "PEDIDO", "COTAÇÃO"], 
-                                   index=["ORÇAMENTO", "PEDIDO", "COTAÇÃO"].index(st.session_state.edit_tipo))
-        novo_frete = col2.number_input("Alterar Frete", value=st.session_state.edit_frete)
-        nova_obs = st.text_area("Alterar Observação", value=st.session_state.edit_obs)
-
-        st.write("---")
-        st.write("**Itens do Pedido:**")
-        
-        # Listar itens com opção de remover
-        for i, item in enumerate(st.session_state.edit_carrinho):
-            c1, c2, c3, c4 = st.columns([3, 1, 1, 1])
-            c1.write(f"{item['sku']}")
-            c2.write(f"Qtd: {item['qtd']}")
-            c3.write(f"R$ {item['valor_unit']:.2f}")
-            if c4.button("❌", key=f"del_edit_{i}"):
-                st.session_state.edit_carrinho.pop(i)
+        # --- SEÇÃO A: CABEÇALHO DO PEDIDO ---
+        c1, c2, c3 = st.columns([2, 1, 1])
+        with c1:
+            novo_tipo = st.selectbox("Tipo", ["ORÇAMENTO", "PEDIDO", "COTAÇÃO"], 
+                                    index=["ORÇAMENTO", "PEDIDO", "COTAÇÃO"].index(st.session_state.edit_tipo),
+                                    key="edit_tipo_sel")
+        with c2:
+            novo_frete = st.number_input("Frete Total", value=st.session_state.edit_frete, key="edit_frete_val")
+        with c3:
+            st.write("##")
+            if st.button("Limpar Carrinho", type="secondary"):
+                st.session_state.edit_carrinho = []
                 st.rerun()
 
-        if st.button("💾 Salvar Alterações", use_container_width=True):
-            # LÓGICA DE SALVAMENTO NO GOOGLE SHEETS
-            # 1. Remove as linhas antigas do ID atual
-            df_remanescente = df_pedidos[~mask]
-            
-            # 2. Cria as novas linhas com o mesmo ID
-            novas_linhas = []
-            for item in st.session_state.edit_carrinho:
-                novas_linhas.append({
+        nova_obs = st.text_area("Observações", value=st.session_state.edit_obs, key="edit_obs_val")
+
+        st.divider()
+
+        # --- SEÇÃO B: ADICIONAR NOVOS ITENS ---
+        st.subheader("Adicionar Novo Item")
+        col_add_1, col_add_2, col_add_3 = st.columns([3, 1, 1])
+        
+        with col_add_1:
+            # Lista de produtos da Base de Dados
+            lista_prod = df_produtos['descricao'].tolist()
+            prod_sel = st.selectbox("Produto", lista_prod, key="sel_prod_edit")
+        with col_add_2:
+            qtd_add = st.number_input("Qtd", min_value=1, value=1, key="qtd_prod_edit")
+        with col_add_3:
+            st.write("##")
+            if st.button("➕ Add", use_container_width=True):
+                # Busca info do produto
+                info_p = df_produtos[df_produtos['descricao'] == prod_sel].iloc[0]
+                novo_item = {
                     "id_pedido": id_p,
-                    "data_pedido": itens_atuais[0]['data_pedido'], # Mantém data original
-                    "doc_cliente": st.session_state.edit_cliente,
-                    "nome_cliente": itens_atuais[0]['nome_cliente'],
-                    "sku_item": item['sku'],
-                    "qtd": item['qtd'],
-                    "valor_final": item['valor_unit'],
-                    "frete": novo_frete,
+                    "data_pedido": itens_atuais.iloc[0]['data_pedido'],
+                    "doc_cliente": itens_atuais.iloc[0]['doc_cliente'],
+                    "nome_cliente": itens_atuais.iloc[0]['nome_cliente'],
+                    "sku_item": str(info_p['id_sku']),
+                    "qtd": qtd_add,
+                    "valor_final": float(info_p['valor_liquido']),
+                    col_frete: novo_frete,
                     "tipo": novo_tipo,
                     "observacao": nova_obs
-                })
-            
-            df_final = pd.concat([df_remanescente, pd.DataFrame(novas_linhas)], ignore_index=True)
-            conn_gsheets.update(spreadsheet=url_base_pedidos, data=df_final)
-            
-            # Limpa estados e fecha
-            del st.session_state.edit_carrinho
-            st.success("Pedido atualizado!")
-            st.cache_data.clear()
-            st.rerun()
+                }
+                st.session_state.edit_carrinho.append(novo_item)
+                st.rerun()
 
-    # 2. Layout Lateral (Filtros)
+        st.divider()
+
+        # --- SEÇÃO C: LISTA DE ITENS ATUAIS ---
+        st.subheader("Itens no Pedido")
+        if not st.session_state.edit_carrinho:
+            st.warning("O pedido está vazio!")
+        else:
+            for i, item in enumerate(st.session_state.edit_carrinho):
+                # Busca descrição para exibir (merge manual)
+                desc = df_produtos[df_produtos['id_sku'] == item['sku_item']]['descricao'].values
+                nome_p = desc[0] if len(desc) > 0 else "Produto não encontrado"
+                
+                cc1, cc2, cc3, cc4 = st.columns([3, 1, 1, 0.5])
+                cc1.caption(f"**{item['sku_item']}** - {nome_p}")
+                cc2.write(f"Qtd: {item['qtd']}")
+                cc3.write(f"R$ {float(item['valor_final']):.2f}")
+                # Botão de remover com chave única (DuplicateKey Fix)
+                if cc4.button("🗑️", key=f"del_it_{i}_{item['sku_item']}"):
+                    st.session_state.edit_carrinho.pop(i)
+                    st.rerun()
+
+        st.divider()
+
+        # --- SEÇÃO D: SALVAR NO BANCO ---
+        if st.button("💾 SALVAR ALTERAÇÕES", type="primary", use_container_width=True):
+            if not st.session_state.edit_carrinho:
+                st.error("Não é possível salvar um pedido sem itens.")
+            else:
+                # 1. Remove itens antigos do ID atual
+                df_limpo = df_pedidos[df_pedidos["id_pedido"] != id_p]
+                
+                # 2. Prepara os novos dados (garantindo que cabeçalhos batam)
+                novos_itens_df = pd.DataFrame(st.session_state.edit_carrinho)
+                
+                # Atualiza os campos globais nos itens (tipo, frete e obs podem ter mudado)
+                novos_itens_df[col_frete] = novo_frete
+                novos_itens_df['tipo'] = novo_tipo
+                novos_itens_df['observacao'] = nova_obs
+                
+                # 3. Une tudo e salva
+                df_final = pd.concat([df_limpo, novos_itens_df], ignore_index=True)
+                
+                try:
+                    # Se estiver usando CSV Local:
+                    df_final.to_csv("Base_Pedido.csv", sep=";", index=False)
+                    # Se estiver usando Google Sheets (Descomente abaixo):
+                    # conn_gsheets.update(spreadsheet=url_base_pedidos, data=df_final)
+                    
+                    st.success("Pedido Atualizado com Sucesso!")
+                    del st.session_state.edit_carrinho # Limpa estado
+                    st.cache_data.clear()
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Erro ao salvar: {e}")
+
+    # --- LAYOUT PRINCIPAL DA PÁGINA ---
     col_filtros, col_detalhe = st.columns([1, 2.5])
 
     with col_filtros:
@@ -750,45 +795,50 @@ elif pagina == "Consultar Pedido":
         f_cliente_check = st.checkbox("CPF/CNPJ")
         f_cliente = st.text_input("Documento", disabled=not f_cliente_check)
 
-        # Lógica de Filtragem simplificada
         df_f = df_pedidos.copy()
-        if f_id_check: df_f = df_f[df_f["id_pedido"].astype(int) == f_id]
+        if f_id_check: df_f = df_f[df_f["id_pedido"] == f_id]
         if f_cliente_check: df_f = df_f[df_f["doc_cliente"].str.contains(f_cliente, na=False)]
 
         st.divider()
-        lista_ids = df_f["id_pedido"].unique()
-        if len(lista_ids) > 0:
-            id_selecionado = st.selectbox("Selecione o Pedido", sorted(lista_ids, reverse=True))
+        lista_ids = sorted(df_f["id_pedido"].unique(), reverse=True)
+        if lista_ids:
+            id_selecionado = st.selectbox("Selecione o Pedido", lista_ids)
         else:
             st.warning("Nenhum pedido encontrado.")
             id_selecionado = None
 
-    # 3. Detalhes e Botão de Editar
     with col_detalhe:
         if id_selecionado:
-            itens_pedido = df_pedidos[df_pedidos["id_pedido"].astype(int) == int(id_selecionado)]
+            # Filtra e exibe resumo
+            itens_venda = df_pedidos[df_pedidos["id_pedido"] == id_selecionado]
             
-            col_tit, col_btn = st.columns([3, 1])
-            col_tit.subheader(f"Pedido #{id_selecionado}")
+            c_header, c_edit = st.columns([3, 1])
+            c_header.subheader(f"Pedido #{id_selecionado}")
             
-            # BOTÃO QUE CHAMA O POP-UP
-            if col_btn.button("📝 Editar Pedido", use_container_width=True):
-                # Limpa cache de edição antes de abrir para não vir lixo de outro pedido
+            # Botão para abrir o Pop-up
+            if c_edit.button("📝 Editar Pedido", use_container_width=True):
                 if "edit_carrinho" in st.session_state: del st.session_state.edit_carrinho
                 editar_pedido_pop(id_selecionado)
 
-            # --- Exibição dos Dados (Igual ao seu original mas adaptado ao Sheets) ---
             with st.container(border=True):
-                st.write(f"**Cliente:** {itens_pedido.iloc[0]['nome_cliente']}")
-                st.write(f"**Tipo:** {itens_pedido.iloc[0]['tipo']}")
-                st.write(f"**Data:** {itens_pedido.iloc[0]['data_pedido']}")
+                st.markdown(f"**Cliente:** {itens_venda.iloc[0]['nome_cliente']}")
+                st.markdown(f"**Tipo:** `{itens_venda.iloc[0]['tipo']}` | **Data:** {itens_venda.iloc[0]['data_pedido']}")
                 
-                # Tabela de itens
-                st.table(itens_pedido[["sku_item", "qtd", "valor_final"]])
+                # Tabela de Itens
+                st.dataframe(itens_venda[["sku_item", "qtd", "valor_final"]], use_container_width=True, hide_index=True)
                 
-                total_p = (itens_pedido["qtd"].astype(float) * itens_pedido["valor_final"].astype(float)).sum() + float(itens_pedido.iloc[0]["frete"])
-                st.metric("Total do Pedido", f"R$ {total_p:.2f}")
-
+                # Cálculo do Total
+                valor_itens = (itens_venda["qtd"].astype(float) * itens_venda["valor_final"].astype(float)).sum()
+                v_frete = float(itens_venda.iloc[0][col_frete])
+                
+                col_m1, col_m2 = st.columns(2)
+                col_m1.metric("Subtotal Itens", f"R$ {valor_itens:.2f}")
+                col_m2.metric("Total Geral (c/ Frete)", f"R$ {valor_itens + v_frete:.2f}")
+                
+                if str(itens_venda.iloc[0]['observacao']).lower() != 'nan':
+                    st.info(f"**Obs:** {itens_venda.iloc[0]['observacao']}")
+        else:
+            st.info("Utilize os filtros à esquerda para localizar um pedido.")
 elif pagina == "Formalizacao":
     st.title("📄 Formalização de Proposta")
     
@@ -933,5 +983,6 @@ elif pagina == "Formalizacao":
                 except Exception as e:
 
                     st.error(f"Erro inesperado: {e}")
+
 
 
