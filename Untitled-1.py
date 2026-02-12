@@ -7,6 +7,16 @@ from docx.shared import Pt
 # Nota: docx2pdf geralmente não funciona em servidores Linux como o Streamlit Cloud. 
 # Recomenda-se usar bibliotecas como 'fpdf' ou 'reportlab' para gerar PDFs diretamente.
 import io
+# No topo do seu código, onde você define a conexão
+conn = st.connection("gsheets", type=GSheetsConnection)
+
+# USE O TTL (Time To Live)
+# Isso diz ao Streamlit: "Guarde esses dados por 10 minutos (600 segundos). 
+# Só vá ao Google de novo se o tempo acabar ou se eu mandar".
+dados_pessoas = conn.read(spreadsheet=url_base_pessoas, ttl=600)
+dados_produtos = conn.read(spreadsheet=url_base_produtos, ttl=600)
+dados_pedidos = conn.read(spreadsheet=url_base_pedidos, ttl=600)
+
 
 # --- CONFIGURAÇÃO DA CONEXÃO COM GOOGLE SHEETS ---
 # Como você forneceu 3 URLs diferentes, criaremos uma função para ler cada uma
@@ -983,6 +993,7 @@ elif pagina == "Formalizacao":
                 except Exception as e:
 
                     st.error(f"Erro inesperado: {e}")
+
 
 
 
