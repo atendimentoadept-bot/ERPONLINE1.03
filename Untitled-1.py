@@ -9,15 +9,19 @@ from docx.shared import Pt
 import io
 # No topo do seu código, onde você define a conexão
 conn = st.connection("gsheets", type=GSheetsConnection)
+# 1. Primeiro, defina os links das suas planilhas
+# Substitua os links abaixo pelos links REAIS das suas planilhas
+url_base_pessoas = "https://docs.google.com/spreadsheets/d/SEU_ID_AQUI/edit"
+url_base_produtos = "https://docs.google.com/spreadsheets/d/OUTRO_ID_AQUI/edit"
+url_base_pedidos = "https://docs.google.com/spreadsheets/d/MAIS_UM_ID_AQUI/edit"
 
-# USE O TTL (Time To Live)
-# Isso diz ao Streamlit: "Guarde esses dados por 10 minutos (600 segundos). 
-# Só vá ao Google de novo se o tempo acabar ou se eu mandar".
+# 2. Depois, crie a conexão
+conn = st.connection("gsheets", type=GSheetsConnection)
+
+# 3. Agora sim, faça a leitura (usando os nomes que você definiu acima)
 dados_pessoas = conn.read(spreadsheet=url_base_pessoas, ttl=600)
 dados_produtos = conn.read(spreadsheet=url_base_produtos, ttl=600)
 dados_pedidos = conn.read(spreadsheet=url_base_pedidos, ttl=600)
-
-
 # --- CONFIGURAÇÃO DA CONEXÃO COM GOOGLE SHEETS ---
 # Como você forneceu 3 URLs diferentes, criaremos uma função para ler cada uma
 # --- FUNÇÕES AUXILIARES DE FORMATAÇÃO ---
@@ -993,6 +997,7 @@ elif pagina == "Formalizacao":
                 except Exception as e:
 
                     st.error(f"Erro inesperado: {e}")
+
 
 
 
