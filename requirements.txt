@@ -1,0 +1,5 @@
+streamlit
+pandas
+python-docx
+num2words
+st-gsheets-connection
