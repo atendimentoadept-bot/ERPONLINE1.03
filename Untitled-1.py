@@ -10,6 +10,29 @@ import io
 
 # --- CONFIGURAÇÃO DA CONEXÃO COM GOOGLE SHEETS ---
 # Como você forneceu 3 URLs diferentes, criaremos uma função para ler cada uma
+# --- FUNÇÕES AUXILIARES DE FORMATAÇÃO ---
+def formatar_cpf_cnpj(doc):
+    doc = ''.join(filter(str.isdigit, str(doc))) # Remove tudo que não é número
+    if len(doc) == 11: # CPF
+        return f"{doc[:3]}.{doc[3:6]}.{doc[6:9]}-{doc[9:]}"
+    elif len(doc) == 14: # CNPJ
+        return f"{doc[:2]}.{doc[2:5]}.{doc[5:8]}/{doc[8:12]}-{doc[12:]}"
+    return doc
+
+def formatar_cep(cep):
+    cep = ''.join(filter(str.isdigit, str(cep)))
+    if len(cep) == 8:
+        return f"{cep[:5]}-{cep[5:]}"
+    return cep
+
+def formatar_telefone(tel):
+    tel = ''.join(filter(str.isdigit, str(tel)))
+    if len(tel) == 11: # Celular com DDD
+        return f"({tel[:2]}) {tel[2:7]}-{tel[7:]}"
+    elif len(tel) == 10: # Fixo com DDD
+        return f"({tel[:2]}) {tel[2:6]}-{tel[6:]}"
+    return tel
+    
 def carregar_dados_gsheets():
     conn = st.connection("gsheets", type=GSheetsConnection)
     
@@ -255,29 +278,6 @@ elif pagina == "Consultar Produto":
             except KeyError as e:
                 st.error(f"Erro: Coluna não encontrada na planilha: {e}")
                 st.write("Colunas disponíveis na sua planilha:", list(dados_produtos.columns))
-
-# --- FUNÇÕES AUXILIARES DE FORMATAÇÃO ---
-def formatar_cpf_cnpj(doc):
-    doc = ''.join(filter(str.isdigit, str(doc))) # Remove tudo que não é número
-    if len(doc) == 11: # CPF
-        return f"{doc[:3]}.{doc[3:6]}.{doc[6:9]}-{doc[9:]}"
-    elif len(doc) == 14: # CNPJ
-        return f"{doc[:2]}.{doc[2:5]}.{doc[5:8]}/{doc[8:12]}-{doc[12:]}"
-    return doc
-
-def formatar_cep(cep):
-    cep = ''.join(filter(str.isdigit, str(cep)))
-    if len(cep) == 8:
-        return f"{cep[:5]}-{cep[5:]}"
-    return cep
-
-def formatar_telefone(tel):
-    tel = ''.join(filter(str.isdigit, str(tel)))
-    if len(tel) == 11: # Celular com DDD
-        return f"({tel[:2]}) {tel[2:7]}-{tel[7:]}"
-    elif len(tel) == 10: # Fixo com DDD
-        return f"({tel[:2]}) {tel[2:6]}-{tel[6:]}"
-    return tel
 
 # --- INÍCIO DA PÁGINA ---
 elif pagina == "Cadastrar Pessoa":
@@ -933,4 +933,5 @@ elif pagina == "Formalizacao":
                 except Exception as e:
 
                     st.error(f"Erro inesperado: {e}")
+
 
