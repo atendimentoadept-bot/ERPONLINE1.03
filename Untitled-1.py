@@ -1,0 +1,910 @@
+import streamlit as st
+import pandas as pd
+from datetime import datetime
+from streamlit_gsheets import GSheetsConnection
+from docx import Document
+from docx.shared import Pt
+# Nota: docx2pdf geralmente não funciona em servidores Linux como o Streamlit Cloud. 
+# Recomenda-se usar bibliotecas como 'fpdf' ou 'reportlab' para gerar PDFs diretamente.
+import io
+
+# --- CONFIGURAÇÃO DA CONEXÃO COM GOOGLE SHEETS ---
+# Como você forneceu 3 URLs diferentes, criaremos uma função para ler cada uma
+def carregar_dados_gsheets():
+    conn = st.connection("gsheets", type=GSheetsConnection)
+    
+    try:
+        # Carregando Base de Produtos
+        url_produtos = "https://docs.google.com/spreadsheets/d/1QwQYMfIflhy18xo2VGRYKnR9-uJJr69W_NfOln8KQJo/edit?gid=0#gid=0"
+        dados_produtos = conn.read(spreadsheet=url_produtos, ttl="5m")
+        
+        # Carregando Base de Pessoas
+        url_pessoas = "https://docs.google.com/spreadsheets/d/1AqdC3_qFiWvVkEunGBw9EuYRDiliMd9dORmZQNHZbVg/edit?gid=0#gid=0"
+        dados_pessoas = conn.read(spreadsheet=url_pessoas, ttl="5m")
+        
+        # Carregando Base de Pedidos
+        url_pedidos = "https://docs.google.com/spreadsheets/d/1U7FQYusJFAOoqRdp7bY3pODyCKGYnvDl9mLWNKAELoI/edit?gid=0#gid=0"
+        dados_pedidos = conn.read(spreadsheet=url_pedidos, ttl="0") # TTL 0 para ver pedidos novos na hora
+        
+        return dados_produtos, dados_pessoas, dados_pedidos, conn
+    except Exception as e:
+        st.error(f"Erro ao conectar com as planilhas: {e}")
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), None
+
+# Inicializando as bases
+dados_produtos, dados_pessoas, dados_pedidos, conn_gsheets = carregar_dados_gsheets()
+
+# --- INTERFACE ---
+st.sidebar.title("Menu")
+pagina = st.sidebar.radio("Ir para:", [
+    "Criar Pedido", 
+    "Consultar Pedido", 
+    "Consultar Produto", 
+    "Cadastrar Produto", 
+    "Cadastrar Pessoa", 
+    "Consultar Pessoa", 
+    "Formalizacao"
+])
+
+# Exemplo de como salvar um novo pedido (Para a Parte 7)
+def salvar_novo_pedido(df_novo):
+    url_pedidos = "https://docs.google.com/spreadsheets/d/1U7FQYusJFAOoqRdp7bY3pODyCKGYnvDl9mLWNKAELoI/edit?gid=0#gid=0"
+    # Lê os existentes
+    df_atual = conn_gsheets.read(spreadsheet=url_pedidos)
+    # Concatena
+    df_final = pd.concat([df_atual, df_novo], ignore_index=True)
+    # Faz o update
+    conn_gsheets.update(spreadsheet=url_pedidos, data=df_final)
+    st.cache_data.clear()
+
+if pagina == "Cadastrar Produto":
+    st.title("Cadastro de Produtos")
+
+    # URL da planilha de produtos para facilitar o uso no código
+    url_base_produtos = "https://docs.google.com/spreadsheets/d/1QwQYMfIflhy18xo2VGRYKnR9-uJJr69W_NfOln8KQJo/edit?gid=0#gid=0"
+
+    aba1, aba2 = st.tabs(["Cadastro Manual", "Importação em Massa (CSV)"])
+
+    # --- ABA 1: CADASTRO MANUAL ---
+    with aba1:
+        st.info("O Valor Líquido será calculado: Custo + Impostos + Lucro")
+
+        with st.form("form_cadastro"):
+            st.subheader("1. Identificação")
+            col_id_1, col_id_2 = st.columns(2)
+            
+            with col_id_1:
+                id_sku = st.text_input("SKU / Código Interno (Obrigatório)")
+                descricao = st.text_input("Descrição do Produto (Obrigatório)")
+                marca = st.text_input("Marca / Fabricante")
+                
+            with col_id_2:
+                categoria = st.selectbox("Categoria", ["Geral", "Eletrônicos", "Vestuário", "Ferramentas", "Outros"])
+                fornecedor = st.selectbox("Fornecedor", ["Samsung", "Apple", "LG", "Motorola", "Outros"])
+                
+                c_est1, c_est2 = st.columns(2)
+                estoque_atual = c_est1.number_input("Estoque Atual", min_value=0, step=1)
+                estoque_minimo = c_est2.number_input("Estoque Mínimo", min_value=1, value=5)
+
+            st.divider() 
+
+            st.subheader("2. Custos e Precificação")
+            col_fin_1, col_fin_2, col_fin_3 = st.columns(3)
+            with col_fin_1:
+                preco_custo = st.number_input("Preço de Custo (R$)", min_value=0.00, step=0.01)
+                lucro = st.number_input("Margem de Lucro (R$)", min_value=0.00, step=0.01)
+            
+            with col_fin_2:
+                icms = st.number_input("ICMS (R$)", min_value=0.0, step=0.01)
+                ipi = st.number_input("IPI (R$)", min_value=0.0, step=0.01)
+            
+            with col_fin_3:
+                valor_st = st.number_input("ST (R$)", min_value=0.0, step=0.01)
+                ncm = st.text_input("NCM")
+
+            botao_salvar = st.form_submit_button("Salvar Produto")
+
+        # --- LÓGICA DE SALVAR (MANUAL) ---
+        if botao_salvar:
+            erros = []
+            if not id_sku: erros.append("O SKU é obrigatório.")
+            if not descricao: erros.append("A Descrição é obrigatória.")
+            
+            # Validação de Duplicados no Google Sheets
+            if not dados_produtos.empty:
+                lista_skus = dados_produtos["id_sku"].astype(str).tolist()
+                if str(id_sku) in lista_skus:
+                    erros.append(f"ERRO CRÍTICO: O SKU '{id_sku}' já existe no sistema!")
+
+            if len(erros) > 0:
+                for erro in erros: st.error(erro)
+            else:
+                valor_liquido = preco_custo + icms + ipi + valor_st + lucro
+                
+                nova_linha = pd.DataFrame({
+                    "id_sku": [id_sku],
+                    "descricao": [descricao],
+                    "categoria": [categoria],
+                    "marca": [marca],
+                    "fornecedor": [fornecedor],
+                    "ncm": [ncm],
+                    "preco_custo": [preco_custo],
+                    "lucro": [lucro],
+                    "icms": [icms], "ipi": [ipi], "st": [valor_st],
+                    "valor_liquido": [valor_liquido],
+                    "estoque_atual": [estoque_atual],
+                    "estoque_minimo": [estoque_minimo],
+                    "ativo": [True],
+                    "data_cadastro": [datetime.now().strftime("%d/%m/%Y")]
+                })
+
+                # Gravação no Google Sheets
+                try:
+                    df_atualizado = pd.concat([dados_produtos, nova_linha], ignore_index=True)
+                    conn_gsheets.update(spreadsheet=url_base_produtos, data=df_atualizado)
+                    st.success(f"✅ Produto {id_sku} cadastrado no Google Sheets!")
+                    st.cache_data.clear() # Limpa o cache para atualizar a consulta
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Erro ao salvar na planilha: {e}")
+
+    # --- ABA 2: IMPORTAÇÃO EM MASSA (CSV) ---
+    with aba2:
+        st.header("Importar Produtos via CSV")
+        
+        with st.expander("📖 Instruções"):
+            st.markdown("O arquivo deve ser **CSV (ponto e vírgula)** com as colunas idênticas à planilha.")
+        
+        arquivo_upload = st.file_uploader("Arraste seu arquivo CSV aqui", type=["csv"])
+        
+        if arquivo_upload is not None:
+            try:
+                df_novo = pd.read_csv(arquivo_upload, sep=";")
+                st.dataframe(df_novo.head())
+                
+                if st.button("Confirmar Importação em Massa"):
+                    skus_existentes = dados_produtos["id_sku"].astype(str).tolist()
+                    df_novo_filtrado = df_novo[~df_novo["id_sku"].astype(str).isin(skus_existentes)]
+                    
+                    if not df_novo_filtrado.empty:
+                        if "data_cadastro" not in df_novo_filtrado.columns:
+                            df_novo_filtrado["data_cadastro"] = datetime.now().strftime("%d/%m/%Y")
+                        
+                        # Atualização no Google Sheets
+                        dados_atualizados = pd.concat([dados_produtos, df_novo_filtrado], ignore_index=True)
+                        conn_gsheets.update(spreadsheet=url_base_produtos, data=dados_atualizados)
+                        
+                        st.success(f"✅ {len(df_novo_filtrado)} produtos importados com sucesso!")
+                        st.cache_data.clear()
+                        st.rerun()
+                    else:
+                        st.warning("Todos os produtos do arquivo já existem na base.")
+            except Exception as e:
+                st.error(f"Erro no processamento: {e}")
+elif pagina == "Consultar Produto":
+    st.title("Consulta de Produtos")
+
+    # Criamos duas colunas: uma estreita para os filtros e uma larga para o resultado
+    col_filtros, col_resultado = st.columns([1, 3])
+
+    with col_filtros:
+        st.subheader("Filtros de Busca")
+        # Busca por SKU
+        filtro_sku = st.text_input("Código SKU")
+        
+        # Busca por Descrição
+        filtro_desc = st.text_input("Descrição do Produto")
+        
+        st.divider()
+        if st.button("🔄 Atualizar Dados"):
+            st.cache_data.clear()
+            st.rerun()
+        st.caption("Dica: A busca encontra palavras parciais e ignora maiúsculas/minúsculas.")
+
+    with col_resultado:
+        # Usamos os dados carregados na Parte 1 via conn_gsheets
+        if dados_produtos.empty:
+            st.warning("A base de produtos está vazia ou não foi carregada corretamente.")
+        else:
+            df_filtrado = dados_produtos.copy()
+
+            # Lógica de Filtro em Tempo Real
+            if filtro_sku:
+                df_filtrado = df_filtrado[df_filtrado["id_sku"].astype(str).str.contains(filtro_sku, case=False, na=False)]
+            
+            if filtro_desc:
+                df_filtrado = df_filtrado[df_filtrado["descricao"].astype(str).str.contains(filtro_desc, case=False, na=False)]
+
+            # Colunas para exibição (Exatamente como estão no Google Sheets)
+            colunas_exibicao = [
+                "id_sku", 
+                "descricao", 
+                "fornecedor", 
+                "preco_custo", 
+                "lucro", 
+                "valor_liquido"
+            ]
+            
+            try:
+                # Filtrar colunas existentes
+                exibicao = df_filtrado[colunas_exibicao].copy()
+                
+                # Garantir que valores financeiros sejam numéricos para exibição correta
+                cols_financeiras = ["preco_custo", "lucro", "valor_liquido"]
+                for col in cols_financeiras:
+                    exibicao[col] = pd.to_numeric(exibicao[col], errors='coerce').fillna(0.0)
+                
+                # Renomear colunas para a tabela amigável
+                exibicao.columns = ["SKU", "DESCRIÇÃO", "FORNECEDOR", "CUSTO (R$)", "LUCRO (R$)", "VALOR LÍQUIDO (R$)"]
+                
+                st.subheader(f"Resultados ({len(exibicao)} encontrados)")
+                
+                if len(exibicao) > 0:
+                    st.dataframe(
+                        exibicao.style.format({
+                            "CUSTO (R$)": "{:.2f}",
+                            "LUCRO (R$)": "{:.2f}",
+                            "VALOR LÍQUIDO (R$)": "{:.2f}"
+                        }), 
+                        use_container_width=True, 
+                        hide_index=True
+                    )
+                else:
+                    st.info("Nenhum produto encontrado com os filtros aplicados.")
+                    
+            except KeyError as e:
+                st.error(f"Erro: Coluna não encontrada na planilha: {e}")
+                st.write("Colunas disponíveis na sua planilha:", list(dados_produtos.columns))
+
+elif pagina == "Cadastrar Pessoa":
+    st.title("Cadastro de Clientes e Fornecedores")
+
+    # URL específica da sua planilha de Pessoas
+    url_base_pessoas = "https://docs.google.com/spreadsheets/d/1AqdC3_qFiWvVkEunGBw9EuYRDiliMd9dORmZQNHZbVg/edit?gid=0#gid=0"
+
+    # O dataframe 'dados_pessoas' já vem carregado da Parte 1, 
+    # mas garantimos que ele tenha a estrutura mínima caso a planilha esteja vazia
+    if dados_pessoas.empty:
+        dados_pessoas = pd.DataFrame(columns=[
+            "id_documento", "tipo_pessoa", "nome_razao", "nome_fantasia", 
+            "rg_ie", "email", "telefone", "cep", "endereco", "numero", 
+            "complemento", "bairro", "cidade", "uf", "categoria", 
+            "limite_credito", "status", "data_cadastro"
+        ])
+
+    with st.form("form_pessoas"):
+        st.subheader("1. Identificação Principal")
+        col_id_1, col_id_2, col_id_3 = st.columns([2, 2, 2])
+        
+        with col_id_1:
+            tipo_pessoa = st.selectbox("Tipo de Pessoa", ["Física", "Jurídica"])
+            label_doc = "CPF (Obrigatório)" if tipo_pessoa == "Física" else "CNPJ (Obrigatório)"
+            id_documento = st.text_input(label_doc)
+            
+        with col_id_2:
+            categoria = st.selectbox("Categoria", ["Cliente", "Fornecedor", "Transportadora", "Ambos"])
+            status = st.selectbox("Status Inicial", ["Ativo", "Inativo", "Bloqueado"])
+            
+        with col_id_3:
+            limite_credito = st.number_input("Limite de Crédito (R$)", min_value=0.0, step=100.0)
+
+        st.divider()
+
+        st.subheader("2. Dados Pessoais / Empresariais")
+        col_dados_1, col_dados_2 = st.columns(2)
+        
+        with col_dados_1:
+            label_nome = "Nome Completo" if tipo_pessoa == "Física" else "Razão Social"
+            nome_razao = st.text_input(label_nome)
+            nome_fantasia = st.text_input("Nome Fantasia (Se houver)")
+            
+        with col_dados_2:
+            label_rg = "RG" if tipo_pessoa == "Física" else "Inscrição Estadual"
+            rg_ie = st.text_input(label_rg)
+            email = st.text_input("E-mail para contato/NFe")
+            telefone = st.text_input("WhatsApp / Telefone")
+
+        st.divider()
+
+        st.subheader("3. Endereço")
+        col_end_1, col_end_2, col_end_3 = st.columns([1, 2, 1])
+        with col_end_1:
+            cep = st.text_input("CEP")
+            numero = st.text_input("Número")
+        with col_end_2:
+            endereco = st.text_input("Logradouro (Rua/Av)")
+            complemento = st.text_input("Complemento")
+        with col_end_3:
+            bairro = st.text_input("Bairro")
+            cidade = st.text_input("Cidade")
+            uf = st.selectbox("UF", ["AC", "AL", "AP", "AM", "BA", "CE", "DF", "ES", "GO", "MA", "MT", "MS", "MG", "PA", "PB", "PR", "PE", "PI", "RJ", "RN", "RS", "RO", "RR", "SC", "SP", "SE", "TO"])
+
+        botao_salvar_pessoa = st.form_submit_button("Finalizar Cadastro")
+
+    # --- LÓGICA DE SALVAR NO GOOGLE SHEETS ---
+    if botao_salvar_pessoa:
+        erros_pessoa = []
+        
+        if not id_documento: erros_pessoa.append("O campo CPF/CNPJ é obrigatório.")
+        if not nome_razao: erros_pessoa.append(f"O campo {label_nome} é obrigatório.")
+        
+        # Trava de Duplicidade consultando o DataFrame carregado
+        if not dados_pessoas.empty:
+            if str(id_documento) in dados_pessoas["id_documento"].astype(str).tolist():
+                erros_pessoa.append(f"Este documento ({id_documento}) já está cadastrado no sistema!")
+
+        if len(erros_pessoa) > 0:
+            for erro in erros_pessoa:
+                st.error(erro)
+        else:
+            nova_pessoa = pd.DataFrame({
+                "id_documento": [str(id_documento)],
+                "tipo_pessoa": [tipo_pessoa],
+                "nome_razao": [nome_razao],
+                "nome_fantasia": [nome_fantasia],
+                "rg_ie": [rg_ie],
+                "email": [email],
+                "telefone": [telefone],
+                "cep": [cep],
+                "endereco": [endereco],
+                "numero": [numero],
+                "complemento": [complemento],
+                "bairro": [bairro],
+                "cidade": [cidade],
+                "uf": [uf],
+                "categoria": [categoria],
+                "limite_credito": [limite_credito],
+                "status": [status],
+                "data_cadastro": [datetime.now().strftime("%d/%m/%Y")]
+            })
+
+            try:
+                # 1. Concatena com os dados atuais
+                dados_atualizados = pd.concat([dados_pessoas, nova_pessoa], ignore_index=True)
+                # 2. Faz o upload para o Google Sheets
+                conn_gsheets.update(spreadsheet=url_base_pessoas, data=dados_atualizados)
+                
+                st.success(f"✅ {tipo_pessoa} '{nome_razao}' cadastrada com sucesso no Google Sheets!")
+                st.cache_data.clear() # Limpa cache para a próxima consulta carregar o novo dado
+                st.rerun()
+            except Exception as e:
+                st.error(f"Erro ao salvar na planilha: {e}")
+
+elif pagina == "Consultar Pessoa":
+    st.title("Consulta de Clientes / Fornecedores")
+
+    # 1. Verificar se os dados foram carregados (dados_pessoas já vem da Parte 1)
+    if dados_pessoas.empty:
+        st.warning("Nenhuma base de pessoas encontrada. Cadastre alguém primeiro ou verifique a conexão!")
+        if st.button("🔄 Tentar Recarregar"):
+            st.cache_data.clear()
+            st.rerun()
+        st.stop() 
+
+    # 2. Layout de Colunas
+    col_filtros, col_resultado = st.columns([1, 3])
+
+    with col_filtros:
+        st.subheader("Filtros")
+        filtro_doc = st.text_input("Buscar por CPF/CNPJ")
+        filtro_nome = st.text_input("Buscar por Nome/Razão")
+        
+        filtro_cat = st.multiselect(
+            "Filtrar Categoria", 
+            ["Cliente", "Fornecedor", "Transportadora", "Ambos"],
+            default=[]
+        )
+        
+        st.divider()
+        if st.button("🔄 Atualizar Planilha"):
+            st.cache_data.clear()
+            st.rerun()
+        st.caption("A busca por nome ignora maiúsculas e minúsculas.")
+
+    with col_resultado:
+        # Criamos a cópia para filtrar
+        df_p_filtrado = dados_pessoas.copy()
+
+        # Lógica de Filtro em Tempo Real
+        if filtro_doc:
+            # Garantimos que o documento seja tratado como string para a busca parcial
+            df_p_filtrado = df_p_filtrado[df_p_filtrado["id_documento"].astype(str).str.contains(filtro_doc, na=False)]
+        
+        if filtro_nome:
+            df_p_filtrado = df_p_filtrado[df_p_filtrado["nome_razao"].astype(str).str.contains(filtro_nome, case=False, na=False)]
+        
+        if filtro_cat:
+            # Filtra se a categoria está na lista selecionada no multiselect
+            df_p_filtrado = df_p_filtrado[df_p_filtrado["categoria"].isin(filtro_cat)]
+
+        # Seleção de Colunas para a Tabela
+        colunas_ver = [
+            "id_documento",
+            "nome_razao",
+            "categoria",
+            "email",
+            "telefone",
+            "cidade",
+            "status"
+        ]
+
+        try:
+            # Selecionamos apenas as colunas desejadas para exibição
+            exibicao_p = df_p_filtrado[colunas_ver].copy()
+            
+            # Renomeando para ficar apresentável
+            exibicao_p.columns = ["DOCUMENTO", "NOME / RAZÃO SOCIAL", "CATEGORIA", "E-MAIL", "CONTATO", "CIDADE", "STATUS"]
+
+            st.subheader(f"Registros Encontrados ({len(exibicao_p)})")
+            
+            if len(exibicao_p) > 0:
+                st.dataframe(
+                    exibicao_p, 
+                    use_container_width=True, 
+                    hide_index=True
+                )
+                
+                # Feedback visual caso haja apenas um resultado
+                if len(exibicao_p) == 1:
+                    st.success("💡 Registro localizado com sucesso!")
+            else:
+                st.info("Nenhuma pessoa encontrada com esses critérios.")
+                
+        except KeyError as e:
+            st.error(f"Erro: Alguma coluna não existe na planilha 'Base_Pessoas': {e}")
+            st.write("Colunas encontradas:", list(dados_pessoas.columns))
+elif pagina == "Criar Pedido":
+    st.title("Central de Pedidos")
+    url_base_pedidos = "https://docs.google.com/spreadsheets/d/1U7FQYusJFAOoqRdp7bY3pODyCKGYnvDl9mLWNKAELoI/edit?gid=0#gid=0"
+
+    # --- INICIALIZAÇÃO DE ESTADOS ---
+    if "carrinho" not in st.session_state: st.session_state.carrinho = []
+    if "cliente_selecionado" not in st.session_state: st.session_state.cliente_selecionado = None
+    if "produto_selecionado" not in st.session_state: st.session_state.produto_selecionado = None
+
+    # Lógica de ID Sequencial usando os dados carregados na Parte 1
+    if not dados_pedidos.empty:
+        # Garantir que o ID seja numérico para achar o máximo
+        ids = pd.to_numeric(dados_pedidos["id_pedido"], errors='coerce').fillna(0)
+        proximo_id = int(ids.max()) + 1
+    else:
+        proximo_id = 1
+
+    st.subheader(f"Pedido Nº: {proximo_id}")
+
+    # --- FUNÇÕES DE BUSCA (DIALOGS) ---
+    @st.dialog("Buscar Cliente")
+    def buscar_cliente_pop():
+        st.write("Pesquise e selecione o cliente.")
+        filtro = st.text_input("Nome ou CPF/CNPJ")
+        if not dados_pessoas.empty:
+            df_p = dados_pessoas.copy()
+            if filtro:
+                df_p = df_p[df_p["nome_razao"].str.contains(filtro, case=False, na=False) | 
+                            df_p["id_documento"].astype(str).str.contains(filtro, na=False)]
+            
+            for _, row in df_p.head(10).iterrows():
+                col1, col2 = st.columns([3, 1])
+                col1.write(f"**{row['nome_razao']}** ({row['id_documento']})")
+                if col2.button("Selecionar", key=f"sel_p_{row['id_documento']}"):
+                    st.session_state.cliente_selecionado = row.to_dict()
+                    st.rerun()
+        else:
+            st.error("Base de Pessoas vazia ou não carregada!")
+
+    @st.dialog("Buscar Produto")
+    def buscar_produto_pop():
+        st.write("Pesquise o SKU ou Descrição")
+        filtro = st.text_input("Palavra-chave")
+        if not dados_produtos.empty:
+            df_prod = dados_produtos.copy()
+            if filtro:
+                df_prod = df_prod[df_prod["descricao"].str.contains(filtro, case=False, na=False) | 
+                                  df_prod["id_sku"].astype(str).str.contains(filtro, na=False)]
+            
+            for _, row in df_prod.head(10).iterrows():
+                col1, col2 = st.columns([3, 1])
+                col1.write(f"**{row['id_sku']}** - {row['descricao']}")
+                if col2.button("Selecionar", key=f"sel_prod_{row['id_sku']}"):
+                    st.session_state.produto_selecionado = row.to_dict()
+                    st.rerun()
+
+    # --- ÁREA 1: IDENTIFICAÇÃO DO CLIENTE ---
+    with st.container(border=True):
+        col_cli_1, col_cli_2 = st.columns([3, 1])
+        with col_cli_1:
+            doc_exibicao = st.session_state.cliente_selecionado['id_documento'] if st.session_state.cliente_selecionado else ""
+            st.text_input("Cliente selecionado:", value=doc_exibicao, disabled=True)
+        with col_cli_2:
+            st.write("##")
+            if st.button("🔍 Buscar Cliente", use_container_width=True):
+                buscar_cliente_pop()
+
+        if st.session_state.cliente_selecionado:
+            c = st.session_state.cliente_selecionado
+            st.success(f"**{c['nome_razao']}** | Limite: R$ {c.get('limite_credito', 0)}")
+
+    # --- ÁREA 2: INCLUSÃO DE PRODUTOS ---
+    with st.container(border=True):
+        st.write("### Adicionar Itens")
+        col_prod_1, col_prod_2, col_prod_3 = st.columns([2, 1, 1])
+        
+        with col_prod_1:
+            sku_exibicao = st.session_state.produto_selecionado['id_sku'] if st.session_state.produto_selecionado else ""
+            st.text_input("SKU selecionado:", value=sku_exibicao, disabled=True)
+        with col_prod_2:
+            st.write("##")
+            if st.button("🔍 Buscar SKU", use_container_width=True):
+                buscar_produto_pop()
+        with col_prod_3:
+            qtd = st.number_input("Quantidade", min_value=1, value=1)
+
+        if st.session_state.produto_selecionado:
+            p = st.session_state.produto_selecionado
+            v_liq = pd.to_numeric(p['valor_liquido'], errors='coerce') or 0.0
+            
+            col_desc_1, col_desc_2 = st.columns(2)
+            desconto = col_desc_1.number_input("Desconto (R$) / Negativo p/ Acréscimo", value=0.0)
+            
+            valor_final_item = v_liq - desconto
+            col_desc_2.metric("Preço Unit. Final", f"R$ {valor_final_item:.2f}")
+
+            if st.button("➕ Adicionar ao Carrinho", use_container_width=True):
+                st.session_state.carrinho.append({
+                    "sku": p['id_sku'],
+                    "descricao": p['descricao'],
+                    "qtd": qtd,
+                    "valor_unit": valor_final_item,
+                    "subtotal": valor_final_item * qtd
+                })
+                st.session_state.produto_selecionado = None
+                st.rerun()
+
+    # --- ÁREA 3: REVISÃO E FINALIZAÇÃO ---
+    if st.session_state.carrinho:
+        st.divider()
+        st.subheader("🛒 Resumo do Carrinho")
+        df_carrinho = pd.DataFrame(st.session_state.carrinho)
+        st.table(df_carrinho[["sku", "descricao", "qtd", "valor_unit", "subtotal"]])
+        
+        if st.button("🗑️ Esvaziar Carrinho"):
+            st.session_state.carrinho = []
+            st.rerun()
+
+        subtotal_itens = df_carrinho["subtotal"].sum()
+
+        # FORMULÁRIO FINAL: Para evitar o bug do Enter salvando sozinho,
+        # validamos o clique do botão explicitamente.
+        with st.form("form_finalizar"):
+            st.write("### Finalização")
+            f1, f2, f3 = st.columns([2, 1, 1])
+            
+            tipo = f1.selectbox("Tipo de Documento", ["ORÇAMENTO", "PEDIDO", "COTAÇÃO"])
+            frete = f2.number_input("Frete Total (R$)", min_value=0.0, step=5.0)
+            obs = st.text_area("Observações do Pedido")
+            
+            total_geral = subtotal_itens + frete
+            f3.metric("TOTAL GERAL", f"R$ {total_geral:.2f}")
+            
+            # Trava de segurança no botão
+            confirmar = st.form_submit_button("💾 CONFIRMAR E SALVAR NO GOOGLE SHEETS", use_container_width=True)
+            
+            if confirmar:
+                if not st.session_state.cliente_selecionado:
+                    st.error("❌ Erro: Você esqueceu de selecionar o cliente!")
+                else:
+                    novas_linhas = []
+                    for item in st.session_state.carrinho:
+                        novas_linhas.append({
+                            "id_pedido": proximo_id,
+                            "data_pedido": datetime.now().strftime("%d/%m/%Y %H:%M"),
+                            "doc_cliente": str(st.session_state.cliente_selecionado['id_documento']),
+                            "nome_cliente": st.session_state.cliente_selecionado['nome_razao'],
+                            "sku_item": item['sku'],
+                            "qtd": item['qtd'],
+                            "valor_final": item['valor_unit'],
+                            "frete": frete,
+                            "tipo": tipo,
+                            "observacao": obs
+                        })
+                    
+                    try:
+                        df_novo_pedido = pd.DataFrame(novas_linhas)
+                        # Combina com os dados que já existem na planilha
+                        df_completo = pd.concat([dados_pedidos, df_novo_pedido], ignore_index=True)
+                        conn_gsheets.update(spreadsheet=url_base_pedidos, data=df_completo)
+                        
+                        st.balloons()
+                        st.success(f"✅ Pedido Nº {proximo_id} salvo com sucesso!")
+                        st.session_state.carrinho = []
+                        st.session_state.cliente_selecionado = None
+                        st.cache_data.clear()
+                        # Pequena pausa antes do rerun para o usuário ver a mensagem
+                        import time
+                        time.sleep(2)
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Erro ao salvar: {e}")
+
+elif pagina == "Consultar Pedido":
+    st.title("Gestão e Consulta de Pedidos")
+    url_base_pedidos = "https://docs.google.com/spreadsheets/d/1U7FQYusJFAOoqRdp7bY3pODyCKGYnvDl9mLWNKAELoI/edit?gid=0#gid=0"
+
+    # 1. Preparação de Dados (Usa os dataframes carregados na Parte 1)
+    if dados_pedidos.empty:
+        st.warning("Nenhuma base de pedidos encontrada.")
+        st.stop()
+
+    df_pedidos = dados_pedidos.copy()
+    # Padronização para cruzamento de dados
+    df_pedidos['sku_item'] = df_pedidos['sku_item'].astype(str)
+    df_pedidos['doc_cliente'] = df_pedidos['doc_cliente'].astype(str)
+    df_pedidos['data_pedido_dt'] = pd.to_datetime(df_pedidos['data_pedido'], format="%d/%m/%Y %H:%M", errors='coerce')
+
+    # --- FUNÇÃO POP-UP DE EDIÇÃO ---
+    @st.dialog("Editar Pedido", width="large")
+    def editar_pedido_pop(id_p):
+        st.write(f"### Editando Pedido Nº {id_p}")
+        
+        # Filtra os dados atuais do pedido
+        mask = df_pedidos["id_pedido"].astype(int) == int(id_p)
+        itens_atuais = df_pedidos[mask].to_dict('records')
+        
+        # Se não inicializado, carrega dados originais para o estado de edição
+        if "edit_carrinho" not in st.session_state:
+            st.session_state.edit_carrinho = []
+            for it in itens_atuais:
+                st.session_state.edit_carrinho.append({
+                    "sku": it['sku_item'],
+                    "qtd": int(it['qtd']),
+                    "valor_unit": float(it['valor_final']),
+                    "subtotal": int(it['qtd']) * float(it['valor_final'])
+                })
+            st.session_state.edit_cliente = itens_atuais[0]['doc_cliente']
+            st.session_state.edit_tipo = itens_atuais[0]['tipo']
+            st.session_state.edit_obs = itens_atuais[0]['observacao']
+            st.session_state.edit_frete = float(itens_atuais[0]['frete'])
+
+        # --- Campos de Edição ---
+        col1, col2 = st.columns(2)
+        novo_tipo = col1.selectbox("Alterar Tipo", ["ORÇAMENTO", "PEDIDO", "COTAÇÃO"], 
+                                   index=["ORÇAMENTO", "PEDIDO", "COTAÇÃO"].index(st.session_state.edit_tipo))
+        novo_frete = col2.number_input("Alterar Frete", value=st.session_state.edit_frete)
+        nova_obs = st.text_area("Alterar Observação", value=st.session_state.edit_obs)
+
+        st.write("---")
+        st.write("**Itens do Pedido:**")
+        
+        # Listar itens com opção de remover
+        for i, item in enumerate(st.session_state.edit_carrinho):
+            c1, c2, c3, c4 = st.columns([3, 1, 1, 1])
+            c1.write(f"{item['sku']}")
+            c2.write(f"Qtd: {item['qtd']}")
+            c3.write(f"R$ {item['valor_unit']:.2f}")
+            if c4.button("❌", key=f"del_edit_{i}"):
+                st.session_state.edit_carrinho.pop(i)
+                st.rerun()
+
+        if st.button("💾 Salvar Alterações", use_container_width=True):
+            # LÓGICA DE SALVAMENTO NO GOOGLE SHEETS
+            # 1. Remove as linhas antigas do ID atual
+            df_remanescente = df_pedidos[~mask]
+            
+            # 2. Cria as novas linhas com o mesmo ID
+            novas_linhas = []
+            for item in st.session_state.edit_carrinho:
+                novas_linhas.append({
+                    "id_pedido": id_p,
+                    "data_pedido": itens_atuais[0]['data_pedido'], # Mantém data original
+                    "doc_cliente": st.session_state.edit_cliente,
+                    "nome_cliente": itens_atuais[0]['nome_cliente'],
+                    "sku_item": item['sku'],
+                    "qtd": item['qtd'],
+                    "valor_final": item['valor_unit'],
+                    "frete": novo_frete,
+                    "tipo": novo_tipo,
+                    "observacao": nova_obs
+                })
+            
+            df_final = pd.concat([df_remanescente, pd.DataFrame(novas_linhas)], ignore_index=True)
+            conn_gsheets.update(spreadsheet=url_base_pedidos, data=df_final)
+            
+            # Limpa estados e fecha
+            del st.session_state.edit_carrinho
+            st.success("Pedido atualizado!")
+            st.cache_data.clear()
+            st.rerun()
+
+    # 2. Layout Lateral (Filtros)
+    col_filtros, col_detalhe = st.columns([1, 2.5])
+
+    with col_filtros:
+        st.subheader("Filtros")
+        f_id_check = st.checkbox("Nº do Pedido")
+        f_id = st.number_input("ID", min_value=1, step=1, disabled=not f_id_check)
+        
+        f_cliente_check = st.checkbox("CPF/CNPJ")
+        f_cliente = st.text_input("Documento", disabled=not f_cliente_check)
+
+        # Lógica de Filtragem simplificada
+        df_f = df_pedidos.copy()
+        if f_id_check: df_f = df_f[df_f["id_pedido"].astype(int) == f_id]
+        if f_cliente_check: df_f = df_f[df_f["doc_cliente"].str.contains(f_cliente, na=False)]
+
+        st.divider()
+        lista_ids = df_f["id_pedido"].unique()
+        if len(lista_ids) > 0:
+            id_selecionado = st.selectbox("Selecione o Pedido", sorted(lista_ids, reverse=True))
+        else:
+            st.warning("Nenhum pedido encontrado.")
+            id_selecionado = None
+
+    # 3. Detalhes e Botão de Editar
+    with col_detalhe:
+        if id_selecionado:
+            itens_pedido = df_pedidos[df_pedidos["id_pedido"].astype(int) == int(id_selecionado)]
+            
+            col_tit, col_btn = st.columns([3, 1])
+            col_tit.subheader(f"Pedido #{id_selecionado}")
+            
+            # BOTÃO QUE CHAMA O POP-UP
+            if col_btn.button("📝 Editar Pedido", use_container_width=True):
+                # Limpa cache de edição antes de abrir para não vir lixo de outro pedido
+                if "edit_carrinho" in st.session_state: del st.session_state.edit_carrinho
+                editar_pedido_pop(id_selecionado)
+
+            # --- Exibição dos Dados (Igual ao seu original mas adaptado ao Sheets) ---
+            with st.container(border=True):
+                st.write(f"**Cliente:** {itens_pedido.iloc[0]['nome_cliente']}")
+                st.write(f"**Tipo:** {itens_pedido.iloc[0]['tipo']}")
+                st.write(f"**Data:** {itens_pedido.iloc[0]['data_pedido']}")
+                
+                # Tabela de itens
+                st.table(itens_pedido[["sku_item", "qtd", "valor_final"]])
+                
+                total_p = (itens_pedido["qtd"].astype(float) * itens_pedido["valor_final"].astype(float)).sum() + float(itens_pedido.iloc[0]["frete"])
+                st.metric("Total do Pedido", f"R$ {total_p:.2f}")
+
+elif pagina == "Formalizacao":
+    st.title("📄 Formalização de Proposta")
+    
+    # 1. Uso dos dados globais carregados na Parte 1
+    if dados_pedidos.empty:
+        st.warning("Nenhum pedido encontrado na base para formalizar.")
+        st.stop()
+
+    df_pedidos = dados_pedidos.copy()
+    df_produtos = dados_produtos.copy()
+    df_pessoas = dados_pessoas.copy()
+
+    # Padronização de tipos para o merge não falhar
+    df_pedidos['id_pedido'] = pd.to_numeric(df_pedidos['id_pedido'], errors='coerce').fillna(0).astype(int)
+    df_pedidos['sku_item'] = df_pedidos['sku_item'].astype(str)
+    df_produtos['id_sku'] = df_produtos['id_sku'].astype(str)
+    df_pessoas['id_documento'] = df_pessoas['id_documento'].astype(str)
+    
+    lista_pedidos = sorted(df_pedidos["id_pedido"].unique(), reverse=True)
+
+    # 2. Seleção do Pedido
+    id_escolhido = st.selectbox("Selecione o Número do Pedido", lista_pedidos, index=None, placeholder="Escolha um pedido para gerar o documento...")
+
+    if id_escolhido:
+        # Filtra dados do Pedido selecionado
+        dados_venda = df_pedidos[df_pedidos["id_pedido"] == id_escolhido]
+        doc_cliente = str(dados_venda.iloc[0]["doc_cliente"])
+        
+        # Merge com produtos para pegar descrição e marca
+        itens_completos = dados_venda.merge(
+            df_produtos[['id_sku', 'descricao', 'marca', 'preco_custo']], 
+            left_on='sku_item', right_on='id_sku', how='left'
+        )
+        
+        # Busca dados do Cliente na base de Pessoas
+        filtro_cliente = df_pessoas[df_pessoas["id_documento"] == doc_cliente]
+        
+        if filtro_cliente.empty:
+            st.error("Cliente deste pedido não encontrado na Base de Pessoas.")
+            st.stop()
+            
+        cliente_info = filtro_cliente.iloc[0]
+
+        # --- PAINEL DE CONFERÊNCIA ANTES DE GERAR ---
+        with st.container(border=True):
+            st.subheader(f"Resumo para Documento: Pedido #{id_escolhido}")
+            c1, c2 = st.columns(2)
+            with c1:
+                st.write(f"**Cliente:** {cliente_info['nome_razao']}")
+                st.write(f"**Data Original:** {dados_venda.iloc[0]['data_pedido']}")
+                st.caption(f"📍 Entrega: {cliente_info['cidade']}/{cliente_info['uf']}")
+            with c2:
+                # Cálculo do total considerando múltiplos itens e o frete único
+                valor_itens = (itens_completos['valor_final'].astype(float) * itens_completos['qtd'].astype(float)).sum()
+                venda_total = valor_itens + float(dados_venda.iloc[0]['frete'])
+                st.metric("Total da Proposta", f"R$ {venda_total:.2f}")
+
+            st.write("**Itens que constarão no Word:**")
+            st.dataframe(itens_completos[['sku_item', 'descricao', 'marca', 'qtd', 'valor_final']], use_container_width=True, hide_index=True)
+
+        st.divider()
+
+        # 3. Inputs Manuais Específicos da Proposta
+        st.subheader("📝 Dados Adicionais da Proposta")
+        with st.form("form_formalizacao"):
+            f1, f2 = st.columns(2)
+            with f1:
+                n_pregao = st.text_input("Nº do Pregão / Processo", placeholder="Ex: 045/2024")
+                validade = st.text_input("Validade da Proposta", value="60 (sessenta) dias")
+            with f2:
+                prazo = st.text_input("Prazo de Entrega", value="15 (quinze) dias úteis")
+                contato_doc = st.text_input("Aos cuidados de:", value=cliente_info['nome_razao'])
+            
+            especificacoes = st.text_area("Informações Complementares / Especificações Técnicas")
+            
+            st.info("O sistema buscará o arquivo 'Proposta_Modelo.docx' na pasta do projeto.")
+            botao_gerar = st.form_submit_button("🚀 GERAR ARQUIVO WORD", use_container_width=True)
+
+        # 4. Lógica de Geração do Documento
+        if botao_gerar:
+            if not all([n_pregao, validade, prazo]):
+                st.error("Por favor, preencha os campos de Pregão, Validade e Prazo.")
+            else:
+                try:
+                    from num2words import num2words
+                    from docx import Document
+                    import io
+
+                    # Carrega o modelo local
+                    doc = Document("Proposta_Modelo.docx")
+                    
+                    # Valor por extenso para a Proposta
+                    valor_extenso = num2words(venda_total, lang='pt_BR', to='currency').upper()
+
+                    # Dicionário de Substituição (Tags [Tag] no seu Word)
+                    subs = {
+                        "[Razao_UASG]": str(cliente_info['nome_razao']),
+                        "[N_pregao]": str(n_pregao),
+                        "[Esp_solicitadas]": str(especificacoes),
+                        "[Validade_Proposta]": str(validade),
+                        "[Prazo_entrega]": str(prazo),
+                        "[Endereco_Cliente]": f"{cliente_info['endereco']}, {cliente_info['numero']} - {cliente_info['bairro']}",
+                        "[Contato_Cliente]": str(contato_doc),
+                        "[Valor_Extenso]": valor_extenso,
+                        "[Valor_Total]": f"R$ {venda_total:.2f}"
+                    }
+
+                    # Substitui no corpo do texto
+                    for p in doc.paragraphs:
+                        for tag, val in subs.items():
+                            if tag in p.text:
+                                p.text = p.text.replace(tag, val)
+
+                    # Preenchimento automático da primeira tabela do Word
+                    if doc.tables:
+                        tabela = doc.tables[0]
+                        for i, it in itens_completos.iterrows():
+                            cells = tabela.add_row().cells
+                            cells[0].text = str(i + 1)
+                            cells[1].text = str(it['descricao'])
+                            cells[2].text = str(it['marca'])
+                            cells[3].text = str(it['sku_item']) # Usando SKU como PartNumber
+                            cells[4].text = str(it['qtd'])
+                            cells[5].text = f"R$ {float(it['valor_final']):.2f}"
+                            cells[6].text = f"R$ {(float(it['valor_final']) * float(it['qtd'])):.2f}"
+
+                    # Salva o arquivo em memória para download
+                    buffer = io.BytesIO()
+                    doc.save(buffer)
+                    buffer.seek(0)
+
+                    st.success("✅ Proposta gerada com sucesso!")
+                    st.download_button(
+                        label="📥 Baixar Proposta (.docx)",
+                        data=buffer,
+                        file_name=f"Proposta_Pedido_{id_escolhido}_{cliente_info['nome_razao'][:15]}.docx",
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    )
+
+                except FileNotFoundError:
+                    st.error("Arquivo 'Proposta_Modelo.docx' não encontrado. Certifique-se de que ele está na mesma pasta do código.")
+                except Exception as e:
+                    st.error(f"Erro inesperado: {e}")
