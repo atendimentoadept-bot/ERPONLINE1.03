@@ -19,9 +19,9 @@ url_base_pedidos = "https://docs.google.com/spreadsheets/d/1U7FQYusJFAOoqRdp7bY3
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 # 3. Agora sim, faça a leitura (usando os nomes que você definiu acima)
-dados_pessoas = conn.read(spreadsheet=url_base_pessoas, ttl=600)
-dados_produtos = conn.read(spreadsheet=url_base_produtos, ttl=600)
-dados_pedidos = conn.read(spreadsheet=url_base_pedidos, ttl=600)
+dados_pessoas = conn.read(spreadsheet=url_base_pessoas, ttl=7200)
+dados_produtos = conn.read(spreadsheet=url_base_produtos, ttl=60)
+dados_pedidos = conn.read(spreadsheet=url_base_pedidos, ttl=20)
 # --- CONFIGURAÇÃO DA CONEXÃO COM GOOGLE SHEETS ---
 # Como você forneceu 3 URLs diferentes, criaremos uma função para ler cada uma
 # --- FUNÇÕES AUXILIARES DE FORMATAÇÃO ---
@@ -997,6 +997,7 @@ elif pagina == "Formalizacao":
                 except Exception as e:
 
                     st.error(f"Erro inesperado: {e}")
+
 
 
 
