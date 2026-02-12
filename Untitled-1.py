@@ -256,14 +256,34 @@ elif pagina == "Consultar Produto":
                 st.error(f"Erro: Coluna não encontrada na planilha: {e}")
                 st.write("Colunas disponíveis na sua planilha:", list(dados_produtos.columns))
 
+# --- FUNÇÕES AUXILIARES DE FORMATAÇÃO ---
+def formatar_cpf_cnpj(doc):
+    doc = ''.join(filter(str.isdigit, str(doc))) # Remove tudo que não é número
+    if len(doc) == 11: # CPF
+        return f"{doc[:3]}.{doc[3:6]}.{doc[6:9]}-{doc[9:]}"
+    elif len(doc) == 14: # CNPJ
+        return f"{doc[:2]}.{doc[2:5]}.{doc[5:8]}/{doc[8:12]}-{doc[12:]}"
+    return doc
+
+def formatar_cep(cep):
+    cep = ''.join(filter(str.isdigit, str(cep)))
+    if len(cep) == 8:
+        return f"{cep[:5]}-{cep[5:]}"
+    return cep
+
+def formatar_telefone(tel):
+    tel = ''.join(filter(str.isdigit, str(tel)))
+    if len(tel) == 11: # Celular com DDD
+        return f"({tel[:2]}) {tel[2:7]}-{tel[7:]}"
+    elif len(tel) == 10: # Fixo com DDD
+        return f"({tel[:2]}) {tel[2:6]}-{tel[6:]}"
+    return tel
+
+# --- INÍCIO DA PÁGINA ---
 elif pagina == "Cadastrar Pessoa":
     st.title("Cadastro de Clientes e Fornecedores")
-
-    # URL específica da sua planilha de Pessoas
     url_base_pessoas = "https://docs.google.com/spreadsheets/d/1AqdC3_qFiWvVkEunGBw9EuYRDiliMd9dORmZQNHZbVg/edit?gid=0#gid=0"
 
-    # O dataframe 'dados_pessoas' já vem carregado da Parte 1, 
-    # mas garantimos que ele tenha a estrutura mínima caso a planilha esteja vazia
     if dados_pessoas.empty:
         dados_pessoas = pd.DataFrame(columns=[
             "id_documento", "tipo_pessoa", "nome_razao", "nome_fantasia", 
@@ -272,14 +292,14 @@ elif pagina == "Cadastrar Pessoa":
             "limite_credito", "status", "data_cadastro"
         ])
 
-    with st.form("form_pessoas"):
+    with st.form("form_pessoas", clear_on_submit=False):
         st.subheader("1. Identificação Principal")
         col_id_1, col_id_2, col_id_3 = st.columns([2, 2, 2])
         
         with col_id_1:
             tipo_pessoa = st.selectbox("Tipo de Pessoa", ["Física", "Jurídica"])
-            label_doc = "CPF (Obrigatório)" if tipo_pessoa == "Física" else "CNPJ (Obrigatório)"
-            id_documento = st.text_input(label_doc)
+            label_doc = "CPF (Somente números)" if tipo_pessoa == "Física" else "CNPJ (Somente números)"
+            id_documento_raw = st.text_input(label_doc, help="A formatação será aplicada automaticamente ao salvar.")
             
         with col_id_2:
             categoria = st.selectbox("Categoria", ["Cliente", "Fornecedor", "Transportadora", "Ambos"])
@@ -289,7 +309,6 @@ elif pagina == "Cadastrar Pessoa":
             limite_credito = st.number_input("Limite de Crédito (R$)", min_value=0.0, step=100.0)
 
         st.divider()
-
         st.subheader("2. Dados Pessoais / Empresariais")
         col_dados_1, col_dados_2 = st.columns(2)
         
@@ -302,14 +321,13 @@ elif pagina == "Cadastrar Pessoa":
             label_rg = "RG" if tipo_pessoa == "Física" else "Inscrição Estadual"
             rg_ie = st.text_input(label_rg)
             email = st.text_input("E-mail para contato/NFe")
-            telefone = st.text_input("WhatsApp / Telefone")
+            telefone_raw = st.text_input("WhatsApp / Telefone", help="Ex: 11999998888")
 
         st.divider()
-
         st.subheader("3. Endereço")
         col_end_1, col_end_2, col_end_3 = st.columns([1, 2, 1])
         with col_end_1:
-            cep = st.text_input("CEP")
+            cep_raw = st.text_input("CEP", help="Ex: 01234567")
             numero = st.text_input("Número")
         with col_end_2:
             endereco = st.text_input("Logradouro (Rua/Av)")
@@ -319,26 +337,35 @@ elif pagina == "Cadastrar Pessoa":
             cidade = st.text_input("Cidade")
             uf = st.selectbox("UF", ["AC", "AL", "AP", "AM", "BA", "CE", "DF", "ES", "GO", "MA", "MT", "MS", "MG", "PA", "PB", "PR", "PE", "PI", "RJ", "RN", "RS", "RO", "RR", "SC", "SP", "SE", "TO"])
 
-        botao_salvar_pessoa = st.form_submit_button("Finalizar Cadastro")
+        botao_salvar_pessoa = st.form_submit_button("Finalizar Cadastro", use_container_width=True)
 
-    # --- LÓGICA DE SALVAR NO GOOGLE SHEETS ---
+    # --- LÓGICA DE SALVAR E FORMATAR ---
     if botao_salvar_pessoa:
+        # Aplicando as formatações antes de validar
+        id_documento = formatar_cpf_cnpj(id_documento_raw)
+        telefone = formatar_telefone(telefone_raw)
+        cep = formatar_cep(cep_raw)
+        
         erros_pessoa = []
         
-        if not id_documento: erros_pessoa.append("O campo CPF/CNPJ é obrigatório.")
+        # Validação de comprimento mínimo (para evitar salvar lixo)
+        if tipo_pessoa == "Física" and len(''.join(filter(str.isdigit, id_documento_raw))) != 11:
+            erros_pessoa.append("CPF inválido. Deve conter 11 dígitos.")
+        if tipo_pessoa == "Jurídica" and len(''.join(filter(str.isdigit, id_documento_raw))) != 14:
+            erros_pessoa.append("CNPJ inválido. Deve conter 14 dígitos.")
         if not nome_razao: erros_pessoa.append(f"O campo {label_nome} é obrigatório.")
         
-        # Trava de Duplicidade consultando o DataFrame carregado
+        # Trava de Duplicidade
         if not dados_pessoas.empty:
-            if str(id_documento) in dados_pessoas["id_documento"].astype(str).tolist():
-                erros_pessoa.append(f"Este documento ({id_documento}) já está cadastrado no sistema!")
+            if id_documento in dados_pessoas["id_documento"].astype(str).tolist():
+                erros_pessoa.append(f"O documento {id_documento} já existe na base!")
 
-        if len(erros_pessoa) > 0:
+        if erros_pessoa:
             for erro in erros_pessoa:
                 st.error(erro)
         else:
             nova_pessoa = pd.DataFrame({
-                "id_documento": [str(id_documento)],
+                "id_documento": [id_documento],
                 "tipo_pessoa": [tipo_pessoa],
                 "nome_razao": [nome_razao],
                 "nome_fantasia": [nome_fantasia],
@@ -359,17 +386,14 @@ elif pagina == "Cadastrar Pessoa":
             })
 
             try:
-                # 1. Concatena com os dados atuais
                 dados_atualizados = pd.concat([dados_pessoas, nova_pessoa], ignore_index=True)
-                # 2. Faz o upload para o Google Sheets
                 conn_gsheets.update(spreadsheet=url_base_pessoas, data=dados_atualizados)
                 
-                st.success(f"✅ {tipo_pessoa} '{nome_razao}' cadastrada com sucesso no Google Sheets!")
-                st.cache_data.clear() # Limpa cache para a próxima consulta carregar o novo dado
+                st.success(f"✅ {nome_razao} cadastrado(a) com sucesso!")
+                st.cache_data.clear()
                 st.rerun()
             except Exception as e:
                 st.error(f"Erro ao salvar na planilha: {e}")
-
 elif pagina == "Consultar Pessoa":
     st.title("Consulta de Clientes / Fornecedores")
 
@@ -907,4 +931,5 @@ elif pagina == "Formalizacao":
                 except FileNotFoundError:
                     st.error("Arquivo 'Proposta_Modelo.docx' não encontrado. Certifique-se de que ele está na mesma pasta do código.")
                 except Exception as e:
+
                     st.error(f"Erro inesperado: {e}")
